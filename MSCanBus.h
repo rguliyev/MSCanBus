@@ -1,3 +1,9 @@
+#include <ESP32-TWAI-CAN.hpp>
+#include "qqqlab_GPS_UBLOX.h"
+#include "FastIMU.h"
+#include <Wire.h>
+#include <stdarg.h>
+
 // Megasquirt Message Types
 #define MSG_CMD 0    // Command
 #define MSG_REQ 1    // Request
