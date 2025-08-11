@@ -15,6 +15,7 @@
 #define GPS_BAUD_RATE 230400
 #define CAN_SPEED 500000  // 500 kbps
 #define CAN_TIMEOUT 25    // ms, default is 1000
+#define I2C_CLOCK_SPEED 400000  // 400 kHz
 
 // MegaSquirt CAN IDs
 #define MS_CAN_ID 0
@@ -30,6 +31,11 @@ MPU6050 IMU;              //Change to the name of any supported IMU, check the d
 #define GPS_RATE_MS 100    // gps update rate in milliseconds (default 100)
 #define GPS_SAVE_CONFIG 2  // save config  0:Do not save config, 1:Save config, 2:Save only when needed (default 2)
 #define GPS_GNSS_MODE 77   // GNSS system(s) to use  Bitmask: 1:GPS, 2:SBAS, 4:Galileo, 8:Beidou, 16:IMES, 32:QZSS, 64:GLONASS (default 0=leave as configured)
+
+// Race Technology broadcast timing
+#define RT_GPS_POSITION_INTERVAL_MS 200  // 5Hz for GPS position (LLH1/LLH2)
+#define RT_GPS_SPEED_INTERVAL_MS 100     // 10Hz for GPS speed
+#define RT_ACCEL_INTERVAL_MS 40          // 25Hz for accelerometer
 
 /* =================================== Do not change bellow ============================================ */
 // Global objects
@@ -91,23 +97,39 @@ location convert(long loc) {
   return res;
 }
 
-void sendCANResponse(uint8_t *data, uint8_t length = 8, const char *debugMsg = nullptr) {
+void sendCANMessage(uint16_t can_id = 0, uint8_t *data = nullptr, uint8_t length = 8, const char *debugMsg = nullptr) {
   // Validate inputs
   if (!data || length > 8) {
-    if (DEBUG) Serial.println(F("[ERROR] Invalid CAN response data"));
+    if (DEBUG) Serial.println(F("[ERROR] Invalid CAN message data"));
     return;
   }
 
-  // Set response data
-  memcpy(txmsg.data, data, length);
+  if (can_id != 0) { // Race Technology: 11-bit CAN
+    txmsg.identifier = can_id;
+    txmsg.extd = 0;
+  } else { // Megasquirt: Create response header (29-bit extended)
+    txmsg.extd = 1;
+    txmsg_id.values.to_id = MS_CAN_ID;
+    txmsg_id.values.msg_type = MSG_RSP;
+    txmsg_id.values.from_id = MY_CAN_ID;
+    txmsg_id.values.block = msg_req_data.values.varblk;
+    txmsg_id.values.offset = msg_req_data.values.varoffset;
+    txmsg.identifier = txmsg_id.i;
+  }
 
-  // Send the message
+  txmsg.rtr = 0;
+  txmsg.data_length_code = length;
+  memcpy(txmsg.data, data, length);
   ESP32Can.writeFrame(txmsg);
 
   // Debug output
   if (DEBUG && debugMsg) {
-    Serial.printf(F("[CAN TX] %s: Block=%d Offset=%d Data=["),
-                  debugMsg, rxmsg_id.values.block, rxmsg_id.values.offset);
+    if (can_id == 0) {
+      Serial.printf(F("[CAN TX] %s: Block=%d Offset=%d Data=["),
+                    debugMsg, rxmsg_id.values.block, rxmsg_id.values.offset);
+    } else {
+      Serial.printf(F("[%s] ID=0x%03X Data=["), debugMsg, can_id);
+    }
     for (int i = 0; i < length; i++) {
       Serial.printf("%02X", data[i]);
       if (i < length - 1) Serial.print(F(" "));
@@ -135,12 +157,9 @@ void parseCAN() {
       return;  // not our CAN table
     }
 
-    // Create the tx packet header
-    createTXHeader();
-
     switch (rxmsg_id.values.offset) {
-      case 2:
-        {  // ADC 1-4 - accelerometer
+      case 2: // ADC 1-4 - accelerometer
+        {
           if (IMU_OK) {
             // normalize +/- 4G to a 12 bit unsigned int value
             uint16_t accelX = constrain((accelData.accelX / 9.8 * 1023) + 2047, 0, 4095);
@@ -149,31 +168,31 @@ void parseCAN() {
 
             uint8_t accelBytes[8] = { accelX / 256, accelX % 256, accelY / 256,
                                       accelY % 256, accelZ / 256, accelZ % 256, 0, 0 };
-            sendCANResponse(accelBytes, 8, "Accel Req");
+            sendCANMessage(0, accelBytes, 8, "Accel Req");
           }
           break;
         }
-      case 110:
-        {  // realtime clock
+      case 110: // realtime clock
+        {
           if (!time_valid) break;
           uint8_t timeData[8] = { gps.state.sec, gps.state.min, gps.state.hour, gps.state.day,
                                   gps.state.day, gps.state.month,
                                   gps.state.year / 256, gps.state.year % 256 };
-          sendCANResponse(timeData, 8, "Time Req");
+          sendCANMessage(0, timeData, 8, "Time Req");
           break;
         }
-      case 128:
-        {  // gps1 - coordinates
+      case 128: // gps1 - coordinates
+        {
           if (!gps_fix_ok) break;
           location lat = convert(gps.state.lat);
           location lng = convert(gps.state.lng);
           uint8_t gpsData[8] = { lat.deg, lat.min, lat.mmin / 256, lat.mmin % 256,
                                  lng.deg, lng.min, lng.mmin / 256, lng.mmin % 256 };
-          sendCANResponse(gpsData, 8, "GPS1 Req");
+          sendCANMessage(0, gpsData, 8, "GPS1 Req");
           break;
         }
-      case 136:
-        {  // gps2 - status/altitude/speed
+      case 136: // gps2 - status/altitude/speed
+        {
           if (!gps_fix_ok) break;
           uint8_t statusData[8];
           statusData[0] = (gps.state.lng < 0 ? 1 : 0) + (gps_fix_ok ? 2 : 0);
@@ -184,7 +203,7 @@ void parseCAN() {
           statusData[5] = (int)round(gps.state.ground_speed / 100) % 256;
           statusData[6] = gps.state.ground_course / 256;
           statusData[7] = gps.state.ground_course % 256;
-          sendCANResponse(statusData, 8, "GPS2 Req");
+          sendCANMessage(0, statusData, 8, "GPS2 Req");
           break;
         }
       default:
@@ -194,25 +213,93 @@ void parseCAN() {
     }
   }
 }
-void createTXHeader() {
-  txmsg.extd = 1;
-  txmsg.data_length_code = 8;
-  txmsg_id.values.to_id = MS_CAN_ID;
-  txmsg_id.values.msg_type = MSG_RSP;
-  txmsg_id.values.from_id = MY_CAN_ID;
-  txmsg_id.values.block = msg_req_data.values.varblk;
-  txmsg_id.values.offset = msg_req_data.values.varoffset;
-  txmsg.identifier = txmsg_id.i;
+
+void broadcastGPSPositionLLH1() {
+  static uint32_t lastBroadcast = 0;
+  if (millis() - lastBroadcast < RT_GPS_POSITION_INTERVAL_MS) return;
+  lastBroadcast = millis();
+
+  if (gps.state.status < 2) return;
+
+  int32_t lat_scaled = gps.state.lat;
+  uint8_t data[8] = {
+    (uint8_t) (gps.state.status >= 2),
+    constrain(gps.state.horizontal_accuracy / 100, 0, 255),  // Accuracy lat (mm to 0.1m units)
+    constrain(gps.state.horizontal_accuracy / 100, 0, 255),  // Accuracy lon (mm to 0.1m units)
+    constrain(gps.state.vertical_accuracy / 100, 0, 255),    // Accuracy alt (mm to 0.1m units)
+    LE32_BYTE0(lat_scaled), LE32_BYTE1(lat_scaled), LE32_BYTE2(lat_scaled), LE32_BYTE3(lat_scaled)
+  };
+
+  sendCANMessage(0x302, data, 8, "GPS LLH1");
+}
+
+void broadcastGPSPositionLLH2() {
+  static uint32_t lastBroadcast = 0;
+  if (millis() - lastBroadcast < RT_GPS_POSITION_INTERVAL_MS) return;
+  lastBroadcast = millis();
+
+  int32_t lon_scaled = gps.state.lng;
+  int32_t alt_scaled = gps.state.alt;
+  uint8_t data[8] = {
+    LE32_BYTE0(lon_scaled), LE32_BYTE1(lon_scaled), LE32_BYTE2(lon_scaled), LE32_BYTE3(lon_scaled),
+    LE32_BYTE0(alt_scaled), LE32_BYTE1(alt_scaled), LE32_BYTE2(alt_scaled), LE32_BYTE3(alt_scaled)
+  };
+
+  sendCANMessage(0x303, data, 8, "GPS LLH2");
+}
+
+void broadcastAccelerationsXYZ() {
+  static uint32_t lastBroadcast = 0;
+  if (millis() - lastBroadcast < RT_ACCEL_INTERVAL_MS) return;
+  lastBroadcast = millis();
+  if (!IMU_OK) return;
+
+  // Scale accelerometer data: g * 1000 (resolution is g/1000)
+  int16_t accelX_scaled = (int16_t)(accelData.accelX * 1000);  // Longitudinal
+  int16_t accelY_scaled = (int16_t)(accelData.accelY * 1000);  // Lateral
+  int16_t accelZ_scaled = (int16_t)(accelData.accelZ * 1000);  // Vertical
+
+  uint8_t data[8] = {
+    0x01,  // Valid accelerometer data since IMU_OK is true
+    0x00,  // Perfect accuracy
+    LE16_BYTE0(accelX_scaled), LE16_BYTE1(accelX_scaled),  // Longitudinal (little endian)
+    LE16_BYTE0(accelY_scaled), LE16_BYTE1(accelY_scaled),  // Lateral (little endian)
+    LE16_BYTE0(accelZ_scaled), LE16_BYTE1(accelZ_scaled)   // Vertical (little endian)
+  };
+
+  sendCANMessage(0x300, data, 8, "RT ACCEL");
+}
+
+void broadcastGPSSpeed2D3D() {
+  static uint32_t lastBroadcast = 0;
+  if (millis() - lastBroadcast < RT_GPS_SPEED_INTERVAL_MS) return;
+  lastBroadcast = millis();
+
+
+  // Scale speed (both 2D and 3D) - same as working code
+  uint32_t speed_scaled = (uint32_t)(gps.state.ground_speed * 10.0f);  // mm/s to m/s * 1e-4
+
+  uint8_t data[8] = {
+    (uint8_t) (gps.state.status >= 2),
+    constrain(gps.state.speed_accuracy / 100, 0, 255),  // Speed accuracy (mm/s to cm/s units)
+
+    // Pack 24-bit little-endian for 2D speed
+    LE24_BYTE0(speed_scaled), LE24_BYTE1(speed_scaled), LE24_BYTE2(speed_scaled),
+
+    // Pack 24-bit little-endian for 3D speed (same value here)
+    LE24_BYTE0(speed_scaled), LE24_BYTE1(speed_scaled), LE24_BYTE2(speed_scaled)
+  };
+
+  sendCANMessage(0x310, data, 8, "GPS SPEED");
 }
 
 void setup() {
   // Setup gyro
   Wire.begin(IMU_SDA, IMU_SCL);
-  Wire.setClock(400000);  //400khz clock
+  Wire.setClock(I2C_CLOCK_SPEED);  //400khz clock
 
   Serial.begin(SERIAL_BAUD_RATE);
-  while (!Serial)
-    ;
+  while (!Serial);
 
   //start GPS Serial
   GPS.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX, GPS_TX);
@@ -247,18 +334,28 @@ void loop() {
   // Update GPS data
   gps.update();
 
+  // Broadcast Race Technology GPS data immediately after GPS update
+  broadcastGPSSpeed2D3D();
+  broadcastGPSPositionLLH1();
+  broadcastGPSPositionLLH2();
+
   // Update IMU data
   if (IMU_OK) {
     IMU.update();
     IMU.getAccel(&accelData);
     IMU.getGyro(&gyroData);
+
+    // Broadcast Race Technology accelerometer data immediately after IMU update
+    broadcastAccelerationsXYZ();
   }
+
   // Debug output
   if (DEBUG && millis() - ts > 1000) {
     printGPSData();
     printIMUData();
     ts = millis();
   }
+
   // Process CAN messages (MegaSquirt protocol)
   parseCAN();
 }

@@ -1,17 +1,20 @@
 # MSCanBus
 
-ESP32-based GPS and Accelerometer CAN Bus implementation for MegaSquirt ECUs.
+ESP32-based GPS, Accelerometer, and etc. CAN Bus implementation for MegaSquirt ECUs.
 
 ## Overview
 
-This project leverages the [ESP32](https://www.espressif.com/en/products/socs/esp32) microcontroller to interface with [MegaSquirt](http://www.msextra.com/) open-source engine controllers via CAN bus. It provides real-time GPS data including coordinates, time, altitude, and vehicle speed and acceleration to the ECU for logging and display.
+This project leverages the [ESP32](https://www.espressif.com/en/products/socs/esp32) microcontroller to interface with [MegaSquirt](http://www.msextra.com/) open-source engine controllers and Race Technology data loggers via CAN bus. It provides real-time GPS data including coordinates, time, altitude, and vehicle speed and acceleration to both systems for logging and display.
 
 ### Features
-* **CAN Bus Communication**: MegaSquirt extended frame protocol (29-bit) at 500 kbps
+* **Dual CAN Bus Protocol Support**:
+  - MegaSquirt extended frame protocol (29-bit) at 500 kbps
+  - Race Technology 11-bit CAN message format
 * **GPS Integration**: u-blox binary protocol with multi-constellation support (GPS, GLONASS, Galileo, Beidou)
 * **Accelerometer Integration**: 3-axis IMU data with automatic calibration (MPU6050)
 * **Real-time Data**: GPS coordinates, UTC time, altitude, course, speed, and acceleration
 * **JBPerf Compatible**: Uses same block/offset scheme as [JBPerf IO Extender Board](https://jbperf.com/io_extender/index.html)
+* **Race Technology Compatible**: Broadcasts GPS position, speed, and accelerometer data using Race Technology 11-bit CAN message format
 * **Debug Output**: Comprehensive serial logging for troubleshooting
 
 ## Hardware Required
@@ -121,6 +124,14 @@ CANL       → CAN Low
 | 128    | GPS Coordinates | Lat/Lng in deg/min format | GPS fix available |
 | 136    | GPS Status | Fix status, altitude, speed, course | GPS fix available |
 
+### Race Technology CAN Broadcasts
+| Message ID | Broadcast Rate | Description | Data Format |
+|------------|----------------|-------------|-------------|
+| 0x300 | 25Hz | Accelerometer XYZ | 16-bit signed, g×1000, big-endian |
+| 0x302 | 5Hz | GPS Position LLH1 | Validity flags, accuracy, latitude (degrees×1e-7) |
+| 0x303 | 5Hz | GPS Position LLH2 | Longitude (degrees×1e-7), altitude (mm) |
+| 0x310 | 10Hz | GPS Speed 2D/3D | Validity flags, accuracy, speed (m/s×1e-4) |
+
 ## Configuration
 
 ### Pin Configuration
@@ -145,6 +156,11 @@ Edit these defines in `MSCanBus.ino` to match your wiring:
 // MegaSquirt CAN IDs
 #define IMU_GEOMETRY 0    //Set IMU geometry (check the reference [picture](https://github.com/LiquidCGS/FastIMU/raw/main/MountIndex.png)).
 MPU6050 IMU;              //Set to a supported by [FastIMU](https://github.com/LiquidCGS/FastIMU) IMU
+
+// Race Technology broadcast timing
+#define RT_GPS_POSITION_INTERVAL_MS 200  // 5Hz for GPS position (LLH1/LLH2)
+#define RT_GPS_SPEED_INTERVAL_MS 100     // 10Hz for GPS speed
+#define RT_ACCEL_INTERVAL_MS 40          // 25Hz for accelerometer
 ```
 
 ### TunerStudio Setup
@@ -179,7 +195,9 @@ Got a CAN Frame for: 10 Got CAN Req
 
 ### Data Format Details
 
-#### Accelerometer Data (Offset 2)
+#### MegaSquirt Protocol (Request/Response)
+
+##### Accelerometer Data (Offset 2)
 - Bytes 0-1: X-axis acceleration (12-bit, big-endian, ±4G normalized to 0-4095)
 - Bytes 2-3: Y-axis acceleration (12-bit, big-endian, ±4G normalized to 0-4095)
 - Bytes 4-5: Z-axis acceleration (12-bit, big-endian, ±4G normalized to 0-4095)
@@ -192,7 +210,7 @@ GyroX: 0.084204 GyroY: 0.151900 GyroZ: -0.265331
 IMU Temp: 24.774117
 ```
 
-#### Time Data (Offset 110)
+##### Time Data (Offset 110)
 - Byte 0: Seconds (0-59)
 - Byte 1: Minutes (0-59)
 - Byte 2: Hours (0-23)
@@ -201,15 +219,41 @@ IMU Temp: 24.774117
 - Byte 5: Month (1-12)
 - Bytes 6-7: Year (big-endian, e.g., 2024 = 0x07E8)
 
-#### GPS Coordinates (Offset 128)
+##### GPS Coordinates (Offset 128)
 - Bytes 0-3: Latitude (degrees, minutes, milli-minutes)
 - Bytes 4-7: Longitude (degrees, minutes, milli-minutes)
 
-#### GPS Status (Offset 136)
+##### GPS Status (Offset 136)
 - Byte 0: Status flags (bit 0: longitude sign, bit 1: GPS fix)
 - Bytes 1-3: Altitude in cm (signed, big-endian)
 - Bytes 4-5: Ground speed in cm/s (big-endian)
 - Bytes 6-7: Course in 0.01° (big-endian)
+
+#### Race Technology Protocol (Broadcast)
+
+##### Accelerometer Data (0x300)
+- Byte 0: Validity flag (0x01 = valid accelerometer data)
+- Byte 1: Accuracy (0x00 = perfect accuracy)
+- Bytes 2-3: X-axis acceleration (16-bit signed, g×1000, big-endian)
+- Bytes 4-5: Y-axis acceleration (16-bit signed, g×1000, big-endian)
+- Bytes 6-7: Z-axis acceleration (16-bit signed, g×1000, big-endian)
+
+##### GPS Position LLH1 (0x302)
+- Byte 0: GPS fix status (0x01 = valid GPS fix)
+- Byte 1: Latitude accuracy (0.1m units, mm÷100)
+- Byte 2: Longitude accuracy (0.1m units, mm÷100)
+- Byte 3: Altitude accuracy (0.1m units, mm÷100)
+- Bytes 4-7: Latitude (32-bit signed, degrees×1e-7, big-endian)
+
+##### GPS Position LLH2 (0x303)
+- Bytes 0-3: Longitude (32-bit signed, degrees×1e-7, big-endian)
+- Bytes 4-7: Altitude (32-bit signed, mm, big-endian)
+
+##### GPS Speed (0x310)
+- Byte 0: GPS fix status (0x01 = valid GPS fix)
+- Byte 1: Speed accuracy (cm/s units, mm/s÷100)
+- Bytes 2-4: 2D speed (24-bit, m/s×1e-4, big-endian)
+- Bytes 5-7: 3D speed (24-bit, m/s×1e-4, big-endian)
 
 ## Project Structure
 ```
@@ -263,3 +307,4 @@ This project includes code from:
 - **MSCan_Gauge**: MegaSquirt CAN protocol implementation ([merkur2k/MSCan_Gauge](https://github.com/merkur2k/MSCan_Gauge))
 
 Compatible with JBPerf IO Extender protocol for MegaSquirt integration.
+Compatible with Race Technology CAN protocol for data logger integration.

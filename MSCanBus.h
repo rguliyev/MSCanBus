@@ -59,3 +59,16 @@ typedef struct {
     unsigned int min;   // minutes
     unsigned int mmin;  // milli-minutes
 } location;
+
+// Little endian byte packing macros for Race Technology CAN
+#define LE32_BYTE0(val) ((uint8_t)(val & 0xFF))          // LSB
+#define LE32_BYTE1(val) ((uint8_t)((val >> 8) & 0xFF))
+#define LE32_BYTE2(val) ((uint8_t)((val >> 16) & 0xFF))
+#define LE32_BYTE3(val) ((uint8_t)((val >> 24) & 0xFF))  // MSB
+
+#define LE24_BYTE0(val) ((uint8_t)(val & 0xFF))          // LSB
+#define LE24_BYTE1(val) ((uint8_t)((val >> 8) & 0xFF))
+#define LE24_BYTE2(val) ((uint8_t)((val >> 16) & 0xFF))  // MSB
+
+#define LE16_BYTE0(val) ((uint8_t)(val & 0xFF))          // LSB
+#define LE16_BYTE1(val) ((uint8_t)((val >> 8) & 0xFF))   // MSB
