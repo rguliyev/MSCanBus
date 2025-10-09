@@ -3,23 +3,24 @@
 #define DEBUG false
 
 // Hardware pins
-#define IMU_SDA 25
-#define IMU_SCL 26
+#define CAN_RX 21
+#define CAN_TX 22
 
 #define GPS_RX 16
 #define GPS_TX 17
 
-#define CAN_RX 21
-#define CAN_TX 22
-
 #define SCK_PIN 14
-#define CS_PIN 13
-#define MISO_PIN 12
+#define MISO_PIN 25
+#define CS_PIN 33
+
+#define IMU_SDA 26
+#define IMU_SCL 27
+
 
 // Basic settings
 #define SERIAL_BAUD_RATE 115200
 #define GPS_BAUD_RATE 230400
-#define CAN_SPEED 500000        // 500 kbps
+#define CAN_SPEED 500           // 500 kbps
 #define CAN_TIMEOUT 25          // msec, default is 1000
 #define I2C_CLOCK_SPEED 400000  // 400 kHz
 
@@ -346,7 +347,7 @@ void setup() {
   tc1.begin();
 
   // Initialize CAN bus through bridge
-  if (!ESP32Can.begin(ESP32Can.convertSpeed(500), CAN_TX, CAN_RX, 10, 10))
+  if (!ESP32Can.begin(ESP32Can.convertSpeed(CAN_SPEED), CAN_TX, CAN_RX, 10, 10))
     Serial.println(F("CAN bus failed!"));
 }
 

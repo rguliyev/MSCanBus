@@ -84,8 +84,8 @@ GND    → GND
 ```
 ESP32    MPU6050
 -----    -------
-GPIO25 → SDA
-GPIO26 → SCL
+GPIO26 → SDA
+GPIO27 → SCL
 3.3V   → VCC
 GND    → GND
 AD0    → GND (sets I2C address to 0x68)
@@ -96,8 +96,8 @@ AD0    → GND (sets I2C address to 0x68)
 ESP32    MAX31855
 -----    --------
 GPIO14 → SCK
-GPIO13 → CS
-GPIO12 → MISO (DO)
+GPIO33 → CS
+GPIO25 → MISO (DO)
 3.3V   → VCC
 GND    → GND
 ```
@@ -124,6 +124,7 @@ CANL       → CAN Low
 
 ### CAN Bus Configuration
 - **Speed**: 500 kbps (configurable in code)
+- **Define**: Set via `CAN_SPEED` constant in `MSCanBus.ino`
 - **Protocol**: MegaSquirt extended frame format (29-bit identifier)
 - **Target ID**: 0 (MegaSquirt ECU, configurable as `MS_CAN_ID`)
 - **Device ID**: 10 (configurable as `MY_CAN_ID`)
@@ -167,15 +168,18 @@ Edit these defines in `MSCanBus.ino` to match your wiring:
 #define DEBUG true    // Enable detailed serial logging
 
 // Hardware pins
-#define GPS_RX    16  // ESP32 pin connected to GPS TX
-#define GPS_TX    17  // ESP32 pin connected to GPS RX
 #define CAN_RX    21  // ESP32 pin connected to CAN transceiver RX
 #define CAN_TX    22  // ESP32 pin connected to CAN transceiver TX
-#define IMU_SDA   25  // ESP32 pin connected to IMU SDA
-#define IMU_SCL   26  // ESP32 pin connected to IMU SCL
+
+#define GPS_RX    16  // ESP32 pin connected to GPS TX
+#define GPS_TX    17  // ESP32 pin connected to GPS RX
+
 #define SCK_PIN   14  // ESP32 pin connected to MAX31855 SCK
-#define CS_PIN    13  // ESP32 pin connected to MAX31855 CS
-#define MISO_PIN  12  // ESP32 pin connected to MAX31855 MISO
+#define MISO_PIN  25  // ESP32 pin connected to MAX31855 MISO
+#define CS_PIN    33  // ESP32 pin connected to MAX31855 CS
+
+#define IMU_SDA   26  // ESP32 pin connected to IMU SDA
+#define IMU_SCL   27  // ESP32 pin connected to IMU SCL
 
 // Race Technology CAN Message IDs
 #define CAN_ID_ACCEL_XYZ     0x300  // Accelerometer XYZ data
@@ -345,6 +349,7 @@ MSCanBus/
 - **Check wiring**: Verify CAN transceiver connections (especially CANH/CANL)
 - **Termination**: Ensure 120Ω resistors on both ends of CAN bus
 - **Speed**: Confirm CAN speed matches MegaSquirt (default 500 kbps)
+- **MegaSquirt warning**: If you see `The following error was reported by the MegaSquirt: CAN transceiver broken? or wrong CAN baud rate?! Wait 20 seconds, then start engine.`, recheck that `CAN_SPEED` is 500 kbps and that CAN_TX=GPIO22/CAN_RX=GPIO21 match the latest hardware pinout.
 - **Power**: Verify 3.3V/5V compatibility with your CAN transceiver
 
 #### 2. GPS Not Getting Fix
