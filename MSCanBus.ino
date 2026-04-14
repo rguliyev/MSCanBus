@@ -21,7 +21,7 @@
 #define SERIAL_BAUD_RATE 115200
 #define GPS_BAUD_RATE 230400
 #define CAN_SPEED 500           // 500 kbps
-#define CAN_TIMEOUT 25          // msec, default is 1000
+#define CAN_TIMEOUT 0           // non-blocking; parseCAN drains queued frames each loop
 #define I2C_CLOCK_SPEED 400000  // 400 kHz
 
 // MegaSquirt CAN IDs
@@ -143,20 +143,20 @@ void sendCANMessage(uint16_t can_id = 0, uint8_t *data = nullptr, uint8_t length
 void parseCAN() {
   bool time_valid = gps.state.valid >> 2 & 1;
   bool gps_fix_ok = gps.state.status > 1;
-  if (ESP32Can.readFrame(rxmsg, CAN_TIMEOUT)) {
-    if (!rxmsg.extd) return;  // Only handle extended frames with proper data
+  while (ESP32Can.readFrame(rxmsg, CAN_TIMEOUT)) {
+    if (!rxmsg.extd) continue;  // Only handle extended frames with proper data
     rxmsg_id.i = rxmsg.identifier;
     if (DEBUG) Serial.printf(F("CAN Frame for: %d\n"), rxmsg_id.values.to_id);
     if (rxmsg_id.values.to_id != MY_CAN_ID && rxmsg_id.values.msg_type != MSG_REQ) {
       if (DEBUG) Serial.printf(F("CAN Msg Type: %d\n"), rxmsg_id.values.msg_type);
-      return;
+      continue;
     }
     // Pack MSG_RSP header into the first 3 data bytes
     memcpy(&msg_req_data.bytes, rxmsg.data, 3);
 
     if (rxmsg_id.values.block != MY_CAN_TBL) {
       if (DEBUG) Serial.printf(F("CAN Msg Type: %d\n"), rxmsg_id.values.block);
-      return;  // not our CAN table
+      continue;  // not our CAN table
     }
 
     switch (rxmsg_id.values.offset) {
