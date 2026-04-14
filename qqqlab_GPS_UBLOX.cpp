@@ -39,9 +39,9 @@ Ported from Ardupilot AP_GPS_UBLOX.h & .cpp (version 4.5.7 2025-02-02)
 #define UBLOX_MB_DEBUGGING 0   // use this to enable debugging of moving baseline configs
 #define UBLOX_CFG_DEBUGGING 0  // debug VALGET/VALSET configuration
 
-#define GPS_BAUD_TIME_MS 1200  //time between baud changes
-#define GPS_TIMEOUT_MS 4000u   //timeout before restarting config
-#define UBLOX_BAUD 230400      //configure this baud rate after trying initial bauds
+#define GPS_BAUD_TIME_MS 1200  // time between baud changes
+#define GPS_TIMEOUT_MS 1400u   // timeout before restarting config
+#define UBLOX_BAUD 460800      // configure this baud rate after trying initial bauds
 
 // baudrates to try to detect GPS with
 const uint32_t AP_GPS_UBLOX::config_baudrates[] = { 230400U, 115200U, 57600U, 38400U, 9600U, 19200U, 460800U };
@@ -51,6 +51,15 @@ void AP_GPS_UBLOX::interface_printf(const char *fmt, ...) {
   va_list args;
   va_start(args, fmt);
   vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  I_print(buf);
+}
+
+void AP_GPS_UBLOX::interface_printf(const __FlashStringHelper *fmt, ...) {
+  char buf[256];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf_P(buf, sizeof(buf), reinterpret_cast<PGM_P>(fmt), args);
   va_end(args);
   I_print(buf);
 }
@@ -90,21 +99,21 @@ void *memmem(const void *haystack, size_t haystacklen, const void *needle, size_
 
 #if UBLOX_DEBUGGING
 #define Debug(fmt, args...) \
-  do { interface_printf("%s:%d: " fmt "\n", __FUNCTION__, __LINE__, ##args); } while (0)
+  do { interface_printf(F("%s:%d: " fmt "\n"), __FUNCTION__, __LINE__, ##args); } while (0)
 #else
 #define Debug(fmt, args...)
 #endif
 
 #if UBLOX_MB_DEBUGGING
 #define MB_Debug(fmt, args...) \
-  do { interface_printf("%s:%d: " fmt "\n", __FUNCTION__, __LINE__, ##args); } while (0)
+  do { interface_printf(F("%s:%d: " fmt "\n"), __FUNCTION__, __LINE__, ##args); } while (0)
 #else
 #define MB_Debug(fmt, args...)
 #endif
 
-#if UBLOX_CFG_DEBUGGINGt
+#if UBLOX_CFG_DEBUGGING
 #define CFG_Debug(fmt, args...) \
-  do { interface_printf("%s:%d: " fmt "\n", __FUNCTION__, __LINE__, ##args); } while (0)
+  do { interface_printf(F("%s:%d: " fmt "\n"), __FUNCTION__, __LINE__, ##args); } while (0)
 #else
 #define CFG_Debug(fmt, args...)
 #endif
@@ -143,6 +152,12 @@ void *memmem(const void *haystack, size_t haystacklen, const void *needle, size_
 AP_GPS_UBLOX::AP_GPS_UBLOX() {
   config_stage = 0;
   config_baud = 0;  //first try current baud rate
+  _sbas_mode = SBAS_Mode::DoNotChange;
+  _raw_data = 0;
+  _min_elevation = -100;
+  navfilter = GPS_ENGINE_NONE;
+  last_configured_gnss = 0;
+  use_single_valget = false;
 }
 
 AP_GPS_UBLOX::~AP_GPS_UBLOX() {
@@ -161,7 +176,7 @@ const AP_GPS_UBLOX::config_list AP_GPS_UBLOX::config_M10[]{
   { ConfigKey::CFG_SIGNAL_QZSS_ENA, 1 },
   { ConfigKey::CFG_SIGNAL_QZSS_L1CA_ENA, 1 },
   { ConfigKey::CFG_SIGNAL_QZSS_L1S_ENA, 1 },
-  { ConfigKey::CFG_NAVSPG_DYNMODEL, 8 },  // Air < 4g
+  { ConfigKey::CFG_NAVSPG_DYNMODEL, GPS_ENGINE_AUTOMOTIVE },
 };
 
 /*
@@ -183,12 +198,16 @@ void AP_GPS_UBLOX::_request_next_config(void) {
     return;
   }
 
-  if (_unconfigured_messages == CONFIG_RATE_SOL && havePvtMsg) {
+  if ((_unconfigured_messages & CONFIG_RATE_SOL) != 0 && havePvtMsg) {
     /*
           we don't need SOL if we have PVT and TIMEGPS. This is needed
           as F9P doesn't support the SOL message
          */
     _unconfigured_messages &= ~CONFIG_RATE_SOL;
+  }
+
+  if (_unconfigured_messages == 0) {
+    return;
   }
 
   Debug("Unconfigured messages: 0x%x Current message: %u\n", (unsigned)_unconfigured_messages, (unsigned)_next_message);
@@ -359,7 +378,7 @@ void AP_GPS_UBLOX::_request_next_config(void) {
     case STEP_F9:
       {
         Debug("STEP_F9");
-        if (_hardware_generation == UBLOX_F9) {
+        if (_hardware_generation == UBLOX_F9 || _hardware_generation == UBLOX_M10) {
           uint8_t cfg_count = populate_F9_gnss();
           // special handling of F9 config
           if (cfg_count > 0) {
@@ -377,7 +396,7 @@ void AP_GPS_UBLOX::_request_next_config(void) {
     case STEP_F9_VALIDATE:
       {
         Debug("STEP_F9_VALIDATE");
-        if (_hardware_generation == UBLOX_F9) {
+        if (_hardware_generation == UBLOX_F9 || _hardware_generation == UBLOX_M10) {
           // GNSS takes 0.5s to reset
           if (I_millis() - _f9_config_time < 500) {
             _next_message--;
@@ -972,10 +991,11 @@ bool AP_GPS_UBLOX::_parse_gps(void) {
           switch (_buffer.nack.msgID) {
             case MSG_CFG_VALGET:
               CFG_Debug("NACK VALGET 0x%x", (unsigned)_buffer.nack.msgID);
-              if (active_config.list != nullptr) {
+              if (active_config.list != nullptr && (_unconfigured_messages & active_config.unconfig_bit) != 0) {
                 /*
                           likely this device does not support fetching multiple keys at once, go one at a time
                         */
+                use_single_valget = true;
                 if (active_config.fetch_index == -1) {
                   CFG_Debug("NACK starting %u", unsigned(active_config.count));
                   active_config.fetch_index = 0;
@@ -987,7 +1007,8 @@ bool AP_GPS_UBLOX::_parse_gps(void) {
                             int(active_config.fetch_index),
                             unsigned(active_config.list[active_config.fetch_index].key),
                             unsigned(active_config.done_mask));
-                  if (active_config.done_mask == (1U << active_config.count) - 1) {
+                  if (active_config.done_mask == (1U << active_config.count) - 1
+                      || active_config.fetch_index >= active_config.count) {
                     // all done!
                     _unconfigured_messages &= ~active_config.unconfig_bit;
                   }
@@ -1002,7 +1023,7 @@ bool AP_GPS_UBLOX::_parse_gps(void) {
               CFG_Debug("NACK VALSET 0x%x 0x%x", (unsigned)_buffer.nack.msgID,
                         unsigned(active_config.list[active_config.set_index].key));
               if (is_gnss_key(active_config.list[active_config.set_index].key)) {
-                interface_printf("GPS: unable to configure band 0x%02x", unsigned(active_config.list[active_config.set_index].key));
+                interface_printf(F("GPS: unable to configure band 0x%02x"), unsigned(active_config.list[active_config.set_index].key));
               }
               break;
           }
@@ -1019,12 +1040,12 @@ bool AP_GPS_UBLOX::_parse_gps(void) {
               (int)_buffer.nav_settings.minElev,
               (unsigned)_buffer.nav_settings.drLimit);
         _buffer.nav_settings.mask = 0;
-        if (_navfilter != GPS_ENGINE_NONE && _buffer.nav_settings.dynModel != _navfilter) {
+        if (navfilter != GPS_ENGINE_NONE && _buffer.nav_settings.dynModel != navfilter) {
           // we've received the current nav settings, change the engine
           // settings and send them back
           Debug("Changing engine setting from %u to %u\n",
-                (unsigned)_buffer.nav_settings.dynModel, (unsigned)_navfilter);
-          _buffer.nav_settings.dynModel = _navfilter;
+                (unsigned)_buffer.nav_settings.dynModel, (unsigned)navfilter);
+          _buffer.nav_settings.dynModel = navfilter;
           _buffer.nav_settings.mask |= 1;
         }
         if (_min_elevation != -100 && _buffer.nav_settings.minElev != _min_elevation) {
@@ -1308,7 +1329,7 @@ bool AP_GPS_UBLOX::_parse_gps(void) {
                 _hardware_variant = UBLOX_F9_NEO;
               }
             }
-            if (strncmp(_version.swVersion, "EXT CORE 4", 10) == 0) {
+            if (strncmp(_version.swVersion, "EXT CORE 4", 10) == 0 || strncmp(_version.swVersion, "ROM CORE 4", 10) == 0) {
               // a M9
               _hardware_generation = UBLOX_M9;
             }
@@ -1326,7 +1347,7 @@ bool AP_GPS_UBLOX::_parse_gps(void) {
             // check if L1L5 in extension
             if (memmem(_buffer.mon_ver.extension, sizeof(_buffer.mon_ver.extension), "L1L5", 4) != nullptr) {
               supports_l5 = true;
-              interface_printf("u-blox supports L5 Band\n");
+              interface_printf(F("u-blox supports L5 Band\n"));
               _unconfigured_messages |= CONFIG_L5;
             }
           }
@@ -1344,7 +1365,8 @@ bool AP_GPS_UBLOX::_parse_gps(void) {
             case UBLOX_UNKNOWN_HARDWARE_GENERATION: strcpy(gen, "UNKNOWN"); break;
             default: strcpy(gen, "OTHER");
           }
-          interface_printf("ublox-%s %s%s HW:%s SW:%s\n", gen, _module, mod != nullptr ? " " : "", _version.hwVersion, _version.swVersion);
+          interface_printf(F("ublox-%s %s%s HW:%s SW:%s\n"), gen, _module, mod != nullptr ? " " : "", _version.hwVersion, _version.swVersion);
+          _unconfigured_messages &= ~CONFIG_VERSION;
 
           break;
         }
@@ -1518,7 +1540,7 @@ bool AP_GPS_UBLOX::_parse_gps(void) {
             state.status = GPS_OK_FIX_3D_RTK_FIXED;
           break;
         case 4:
-          interface_printf("Unexpected state %d\n", _buffer.pvt.flags);
+          interface_printf(F("Unexpected state %d\n"), _buffer.pvt.flags);
           state.status = GPS_OK_FIX_3D;
           break;
         case 5:
@@ -1623,7 +1645,7 @@ bool AP_GPS_UBLOX::_parse_gps(void) {
 #endif
             break;
           default:
-            interface_printf("Wrong Ublox Hardware Version%u\n", _hardware_generation);
+            interface_printf(F("Wrong Ublox Hardware Version%u\n"), _hardware_generation);
             break;
         };
         _unconfigured_messages &= ~CONFIG_VERSION;
@@ -1747,7 +1769,7 @@ bool AP_GPS_UBLOX::_configure_valset(ConfigKey key, const void *value, uint8_t l
   }
 
   const uint8_t len = config_key_size(key);
-  struct ubx_cfg_valset msg{};
+  struct ubx_cfg_valset msg {};
   uint8_t buf[sizeof(msg) + len];
   if (I_availableForWrite() < (uint16_t)(sizeof(struct ubx_header) + sizeof(buf) + 2)) {
     return false;
@@ -1799,20 +1821,23 @@ bool AP_GPS_UBLOX::_configure_config_set(const config_list *list, uint8_t count,
   // -1) then if we get a NACK for VALGET we switch to fetching one
   // value at a time. This copes with the M10S which can only fetch
   // one value at a time
-  active_config.fetch_index = -1;
+  active_config.fetch_index = use_single_valget ? 0 : -1;
 
+  const uint8_t first_key = use_single_valget ? active_config.fetch_index : 0;
+  const uint8_t key_count = use_single_valget ? 1 : count;
   uint8_t buf[sizeof(ubx_cfg_valget) + count * sizeof(ConfigKey)];
-  struct ubx_cfg_valget msg{};
+  struct ubx_cfg_valget msg {};
   if (I_availableForWrite() < (uint16_t)(sizeof(struct ubx_header) + sizeof(buf) + 2)) {
     return false;
   }
   msg.version = 0;
   msg.layers = 0;  // ram
   memcpy(buf, &msg, sizeof(msg));
-  for (uint8_t i = 0; i < count; i++) {
-    memcpy(&buf[sizeof(msg) + i * sizeof(ConfigKey)], &list[i].key, sizeof(ConfigKey));
+  for (uint8_t i = 0; i < key_count; i++) {
+    const uint8_t list_index = first_key + i;
+    memcpy(&buf[sizeof(msg) + i * sizeof(ConfigKey)], &list[list_index].key, sizeof(ConfigKey));
   }
-  return _send_message(CLASS_CFG, MSG_CFG_VALGET, buf, sizeof(buf));
+  return _send_message(CLASS_CFG, MSG_CFG_VALGET, buf, sizeof(msg) + key_count * sizeof(ConfigKey));
 }
 
 /*
@@ -1829,7 +1854,7 @@ bool AP_GPS_UBLOX::_configure_list_valset(const config_list *list, uint8_t count
     return false;
   }
 
-  struct ubx_cfg_valset msg{};
+  struct ubx_cfg_valset msg {};
   uint8_t buf[sizeof(msg) + sizeof(config_list) * count];
   if (I_availableForWrite() < (uint16_t)(sizeof(struct ubx_header) + sizeof(buf) + 2)) {
     return false;
@@ -1868,7 +1893,7 @@ void AP_GPS_UBLOX::_save_cfg() {
   _send_message(CLASS_CFG, MSG_CFG_CFG, &save_cfg, sizeof(save_cfg));
   _last_cfg_sent_time = I_millis();
   _num_cfg_save_tries++;
-  interface_printf("Saving config\n");
+  interface_printf(F("Saving config\n"));
 }
 
 /*
@@ -1973,7 +1998,7 @@ static_assert((1 << ARRAY_SIZE(reasons)) == CONFIG_LAST, "UBLOX: Missing configu
 void AP_GPS_UBLOX::broadcast_configuration_failure_reason(void) {
   for (uint8_t i = 0; i < ARRAY_SIZE(reasons); i++) {
     if (_unconfigured_messages & (1 << i)) {
-      interface_printf("%s configuration 0x%02x\n", reasons[i], (unsigned int)_unconfigured_messages);
+      interface_printf(F("%s configuration 0x%02x\n"), reasons[i], (unsigned int)_unconfigured_messages);
       break;
     }
   }
@@ -2181,7 +2206,7 @@ void AP_GPS_UBLOX::update() {
           //message was parsed
           config_stage++;
           timing.last_message_time_ms = I_millis();  //reset lost connection timeout
-          interface_printf("Connected (%d baud)\n", (int)UBLOX_BAUD);
+          interface_printf(F("Connected (%d baud)\n"), (int)UBLOX_BAUD);
           Debug("new config_stage:%d config_baud:%d\n", (int)config_stage, (int)config_baud);
         } else if (I_millis() - config_stage_ms > GPS_BAUD_TIME_MS) {
           //select next baud rate
@@ -2222,7 +2247,7 @@ void AP_GPS_UBLOX::update() {
   bool data_should_be_logged = false;
   if (!result) {
     if (tnow - timing.last_message_time_ms > GPS_TIMEOUT_MS) {
-      interface_printf("LOST CONNECTION\n");
+      interface_printf(F("LOST CONNECTION\n"));
       memset((void *)&state, 0, sizeof(state));
       state.hdop = GPS_UNKNOWN_DOP;
       state.vdop = GPS_UNKNOWN_DOP;

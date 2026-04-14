@@ -33,14 +33,11 @@ Ported from Ardupilot AP_GPS_UBLOX.h & .cpp (version 4.5.7 2025-02-02)
 
 #include <stddef.h>
 #include <inttypes.h>
+#include <Arduino.h>
 
 //Instance functions/vars
 class AP_GPS_Interface {
 };
-
-
-
-
 
 #define GPS_UNKNOWN_DOP UINT16_MAX  // set unknown DOP's to maximum value, which is also correct for MAVLink
 
@@ -161,6 +158,8 @@ public:
   // @User: Advanced
   //AP_GROUPINFO("_SAVE_CFG", 11, AP_GPS, save_config, 2),
   uint8_t save_config = 2;
+  // GPS navigation engine setting. -1 leaves the receiver's current setting unchanged.
+  int8_t navfilter = -1;
 
 protected:
   //additions for this port
@@ -171,6 +170,7 @@ protected:
   uint32_t config_baud = 0;  //baudrate for initblob
   bool initblob_send();
   void interface_printf(const char *fmt, ...);
+  void interface_printf(const __FlashStringHelper *fmt, ...);
 
 public:
   /// GPS status codes.  These are kept aligned with MAVLink by
@@ -262,7 +262,6 @@ public:
   // configuration parameters
   enum SBAS_Mode _sbas_mode;
   uint8_t _raw_data;
-  uint8_t _navfilter;
   int8_t _min_elevation;
   uint8_t _auto_config = 1;
 
@@ -1020,6 +1019,7 @@ protected:
   // populate config_GNSS for F9P
   uint8_t populate_F9_gnss(void);
   uint8_t last_configured_gnss;
+  bool use_single_valget;
 
   uint8_t _pps_freq = 1;
 #ifdef HAL_GPIO_PPS

@@ -20,8 +20,8 @@
 #define CAN_ID_EGT 0x690        // EGT Temperature (1680 decimal)
 
 // Race Technology broadcast timing
-#define RT_GPS_POSITION_INTERVAL_MS 200  // 5Hz for GPS position (LLH1/LLH2)
-#define RT_GPS_SPEED_INTERVAL_MS 100     // 10Hz for GPS speed
+#define RT_GPS_POSITION_INTERVAL_MS 100  // 10Hz for GPS position (LLH1/LLH2)
+#define RT_GPS_SPEED_INTERVAL_MS 50      // 20Hz for GPS speed
 #define RT_ACCEL_INTERVAL_MS 40          // 25Hz for accelerometer
 #define RT_EGT_INTERVAL_MS 333           // 3Hz for EGT data (change to your sensor response time)
 

@@ -19,7 +19,7 @@
 
 // Basic settings
 #define SERIAL_BAUD_RATE 115200
-#define GPS_BAUD_RATE 230400
+#define GPS_BAUD_RATE 460800
 #define CAN_SPEED 500           // 500 kbps
 #define CAN_TIMEOUT 0           // non-blocking; parseCAN drains queued frames each loop
 #define I2C_CLOCK_SPEED 400000  // 400 kHz
@@ -35,9 +35,10 @@
 MPU6050 IMU;              //Change to the name of any supported IMU, check the docs for the supported IMUs
 
 // GPS settings
-#define GPS_RATE_MS 100    // gps update rate in milliseconds (default 100)
+#define GPS_RATE_MS 50     // gps update rate in milliseconds (default 100)
 #define GPS_SAVE_CONFIG 2  // save config  0:Do not save config, 1:Save config, 2:Save only when needed (default 2)
-#define GPS_GNSS_MODE 77   // GNSS system(s) to use  Bitmask: 1:GPS, 2:SBAS, 4:Galileo, 8:Beidou, 16:IMES, 32:QZSS, 64:GLONASS (default 0=leave as configured)
+#define GPS_GNSS_MODE 5    // GNSS system(s) to use  Bitmask: 1:GPS, 2:SBAS, 4:Galileo, 8:Beidou, 16:IMES, 32:QZSS, 64:GLONASS (default 0=leave as configured)
+#define GPS_NAV_ENGINE 4   // GPS_ENGINE_AUTOMOTIVE
 
 /* =================================== Do not change bellow ============================================ */
 // Global objects
@@ -341,6 +342,7 @@ void setup() {
   gps.rate_ms = GPS_RATE_MS;
   gps.gnss_mode = GPS_GNSS_MODE;
   gps.save_config = GPS_SAVE_CONFIG;
+  gps.navfilter = GPS_NAV_ENGINE;
   gps.begin(&GPS);
 
   // start EGT
