@@ -30,6 +30,7 @@ Ported from Ardupilot AP_GPS_UBLOX.h & .cpp (version 4.5.7 2025-02-02)
 //
 
 #include "qqqlab_GPS_UBLOX.h"
+#include "Config.h"
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdio.h>

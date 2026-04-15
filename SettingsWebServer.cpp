@@ -1,10 +1,11 @@
-#include "WiFiSettingsWeb.h"
+#include "SettingsWebServer.h"
 
 #include <Arduino.h>
 #include <WebServer.h>
 
-#include "SystemDebug.h"
-#include "WiFiSettingsState.h"
+#include "DebugLog.h"
+#include "WebDebug.h"
+#include "WiFiSettings.h"
 
 static WebServer webServer(80);
 static bool webServerStarted = false;
@@ -83,6 +84,10 @@ static String wifiSettingsPage(const String &notice) {
   page += F("<div class=\"status\">");
   page += htmlEscape(accessPointStatusText());
   page += F("</div>");
+  page += F("<h2>Current Configuration</h2>");
+  page += F("<pre>");
+  page += htmlEscape(accessPointDebugText());
+  page += F("</pre>");
   page += F("<form method=\"post\" action=\"/wifi\">");
   page += F("<label for=\"ssid\">Access point name</label>");
   page += F("<input id=\"ssid\" name=\"ssid\" maxlength=\"32\" required value=\"");
@@ -111,27 +116,124 @@ static void appendDebugPanel(String &page, const __FlashStringHelper *title, con
   page += F("\">Waiting for data...</pre></section>");
 }
 
+static void appendDebugLink(String &page, const __FlashStringHelper *title, const char *path) {
+  page += F("<a class=\"button secondary\" href=\"");
+  page += path;
+  page += F("\">");
+  page += title;
+  page += F("</a>");
+}
+
+static const __FlashStringHelper *debugStateText(DebugLogModule module) {
+  return isDebugLogEnabled(module) ? F("enabled") : F("disabled");
+}
+
+static void appendDebugState(String &page, const __FlashStringHelper *title, DebugLogModule module) {
+  page += F("<p>");
+  page += title;
+  page += F(": ");
+  page += debugStateText(module);
+  page += F("</p>");
+}
+
 static String debugPage() {
   String page = pageStart(F("MSCanBus Debug"));
   page += F("<h1>Logs / Debug</h1>");
-  page += F("<p class=\"hint\">Live runtime values from each module. Serial logs remain available on the USB monitor.</p>");
-  appendDebugPanel(page, F("WiFi"), "wifi");
-  appendDebugPanel(page, F("System"), "system");
-  appendDebugPanel(page, F("GPS"), "gps");
-  appendDebugPanel(page, F("Accelerometer / IMU"), "imu");
-  appendDebugPanel(page, F("Temperature / EGT"), "egt");
-  appendDebugPanel(page, F("CAN"), "can");
+  page += F("<p class=\"hint\">Choose one live debug stream. Serial logs remain available on the USB monitor.</p>");
+  page += F("<div class=\"actions\">");
+  appendDebugLink(page, F("WiFi"), "/debug/wifi");
+  appendDebugLink(page, F("System"), "/debug/system");
+  appendDebugLink(page, F("Startup"), "/debug/startup");
+  appendDebugLink(page, F("GPS"), "/debug/gps");
+  appendDebugLink(page, F("Accelerometer / IMU"), "/debug/imu");
+  appendDebugLink(page, F("Temperature / EGT"), "/debug/egt");
+  appendDebugLink(page, F("CAN"), "/debug/can");
+  page += F("</div>");
+  page += F("<div class=\"status\">");
+  appendDebugState(page, F("WiFi"), DEBUG_LOG_WIFI);
+  appendDebugState(page, F("System"), DEBUG_LOG_SYSTEM);
+  appendDebugState(page, F("Startup"), DEBUG_LOG_STARTUP);
+  appendDebugState(page, F("GPS"), DEBUG_LOG_GPS);
+  appendDebugState(page, F("UBlox"), DEBUG_LOG_UBLOX);
+  appendDebugState(page, F("IMU"), DEBUG_LOG_IMU);
+  appendDebugState(page, F("EGT"), DEBUG_LOG_EGT);
+  appendDebugState(page, F("CAN"), DEBUG_LOG_CAN);
+  page += F("</div>");
   page += F("<div class=\"actions\"><a class=\"button secondary\" href=\"/\">Home</a><a class=\"button\" href=\"/wifi\">Change WiFi Settings</a></div>");
+  appendPageEnd(page);
+  return page;
+}
+
+static String debugModulePage(const __FlashStringHelper *title, const char *id, DebugLogModule module) {
+  String page = pageStart(F("MSCanBus Debug"));
+  page += F("<h1>");
+  page += title;
+  page += F("</h1>");
+  page += F("<p class=\"hint\">Live debug stream for this module only.</p>");
+  page += F("<div class=\"status\">Debug is ");
+  page += debugStateText(module);
+  page += F(".</div>");
+  page += F("<div class=\"actions\"><form method=\"post\" action=\"/debug/");
+  page += id;
+  page += F("/enable\"><button type=\"submit\">Enable Debug</button></form>");
+  page += F("<form method=\"post\" action=\"/debug/");
+  page += id;
+  page += F("/disable\"><button class=\"secondary\" type=\"submit\">Disable Debug</button></form></div>");
+  appendDebugPanel(page, title, id);
+  page += F("<div class=\"actions\"><a class=\"button secondary\" href=\"/debug\">All Debug Pages</a><a class=\"button secondary\" href=\"/\">Home</a></div>");
   page += F("<script>");
-  page += F("const streams=[['wifi','/debug/stream/wifi'],['system','/debug/stream/system'],['gps','/debug/stream/gps'],['imu','/debug/stream/imu'],['egt','/debug/stream/egt'],['can','/debug/stream/can']];");
-  page += F("for(const [id,url] of streams){");
+  page += F("const id='");
+  page += id;
+  page += F("';");
+  page += F("const url='/debug/stream/");
+  page += id;
+  page += F("';");
   page += F("const out=document.getElementById('debug-'+id);");
   page += F("const statusEl=document.getElementById('status-'+id);");
   page += F("const events=new EventSource(url);");
   page += F("events.onopen=()=>{statusEl.textContent='Connected';};");
   page += F("events.onmessage=(event)=>{out.textContent=event.data;out.dataset.seen='1';statusEl.textContent='Updated '+new Date().toLocaleTimeString();};");
   page += F("events.onerror=()=>{statusEl.textContent=out.dataset.seen?'Waiting for next update...':'Connecting...';};");
-  page += F("}");
+  page += F("</script>");
+  appendPageEnd(page);
+  return page;
+}
+
+static void appendDebugToggleForms(String &page, const char *id, const __FlashStringHelper *label, DebugLogModule module, const char *enablePath, const char *disablePath) {
+  page += F("<div class=\"status\">");
+  page += label;
+  page += F(" is ");
+  page += debugStateText(module);
+  page += F(".</div>");
+  page += F("<div class=\"actions\"><form method=\"post\" action=\"");
+  page += enablePath;
+  page += F("\"><button type=\"submit\">Enable ");
+  page += label;
+  page += F("</button></form>");
+  page += F("<form method=\"post\" action=\"");
+  page += disablePath;
+  page += F("\"><button class=\"secondary\" type=\"submit\">Disable ");
+  page += label;
+  page += F("</button></form></div>");
+}
+
+static String gpsDebugModulePage() {
+  String page = pageStart(F("MSCanBus GPS Debug"));
+  page += F("<h1>GPS</h1>");
+  page += F("<p class=\"hint\">Regular GPS debug shows parsed GPS state. UBlox driver debug shows the driver trace from qqqlab_GPS_UBLOX.cpp.</p>");
+  appendDebugToggleForms(page, "gps", F("Regular GPS Debug"), DEBUG_LOG_GPS, "/debug/gps/enable", "/debug/gps/disable");
+  appendDebugToggleForms(page, "gps", F("UBlox Driver Debug"), DEBUG_LOG_UBLOX, "/debug/gps/ublox/enable", "/debug/gps/ublox/disable");
+  appendDebugPanel(page, F("GPS"), "gps");
+  page += F("<div class=\"actions\"><a class=\"button secondary\" href=\"/debug\">All Debug Pages</a><a class=\"button secondary\" href=\"/\">Home</a></div>");
+  page += F("<script>");
+  page += F("const id='gps';");
+  page += F("const url='/debug/stream/gps';");
+  page += F("const out=document.getElementById('debug-'+id);");
+  page += F("const statusEl=document.getElementById('status-'+id);");
+  page += F("const events=new EventSource(url);");
+  page += F("events.onopen=()=>{statusEl.textContent='Connected';};");
+  page += F("events.onmessage=(event)=>{out.textContent=event.data;out.dataset.seen='1';statusEl.textContent='Updated '+new Date().toLocaleTimeString();};");
+  page += F("events.onerror=()=>{statusEl.textContent=out.dataset.seen?'Waiting for next update...':'Connecting...';};");
   page += F("</script>");
   appendPageEnd(page);
   return page;
@@ -153,23 +255,47 @@ static void handleDebug() {
   webServer.send(200, "text/html", debugPage());
 }
 
+static void handleDebugModule(const __FlashStringHelper *title, const char *id, DebugLogModule module) {
+  webServer.send(200, "text/html", debugModulePage(title, id, module));
+}
+
+static void handleGpsDebugModule() {
+  webServer.send(200, "text/html", gpsDebugModulePage());
+}
+
+static void redirectToDebugModule(const char *id) {
+  String location = F("/debug/");
+  location += id;
+  webServer.sendHeader("Location", location, true);
+  webServer.send(303, "text/plain", "");
+}
+
+static void handleDebugToggle(DebugLogModule module, bool enabled, const char *id) {
+  setDebugLogEnabled(module, enabled);
+  redirectToDebugModule(id);
+}
+
 static String debugStreamPayload() {
   String payload;
   payload.reserve(5200);
   payload += F("[WiFi / Access Point]\n");
   payload += accessPointDebugText();
-  payload += F("\n\n[GPS / IMU / EGT / CAN]\n");
-  payload += systemDebugText();
+  payload += F("\n\n[Startup / System / GPS / IMU / EGT / CAN]\n");
+  payload += webAllDebugText();
   return payload;
 }
 
 static String moduleDebugStreamPayload(const String &module) {
-  if (module == F("wifi")) return accessPointDebugText();
-  if (module == F("system")) return systemStatusDebugText();
-  if (module == F("gps")) return gpsDebugText();
-  if (module == F("imu")) return imuDebugText();
-  if (module == F("egt")) return egtDebugText();
-  if (module == F("can")) return canDebugText();
+  if (module == F("wifi")) {
+    if (!isDebugLogEnabled(DEBUG_LOG_WIFI)) return F("WiFi debug disabled\n");
+    return accessPointDebugText();
+  }
+  if (module == F("system")) return webSystemStatusDebugText();
+  if (module == F("startup")) return webStartupDebugText();
+  if (module == F("gps")) return webGpsDebugText();
+  if (module == F("imu")) return webImuDebugText();
+  if (module == F("egt")) return webEgtDebugText();
+  if (module == F("can")) return webCanDebugText();
   return debugStreamPayload();
 }
 
@@ -243,16 +369,40 @@ static void handleWiFiForget() {
   sendWiFiSettingsPage(F("Default access point settings will be restored."));
 }
 
-void setupWiFiSettingsWebServer() {
+void setupSettingsWebServer() {
   if (webServerStarted) return;
 
   webServer.on("/", HTTP_GET, handleWiFiRoot);
   webServer.on("/wifi", HTTP_GET, handleWiFiSettings);
   webServer.on("/wifi", HTTP_POST, handleWiFiSave);
   webServer.on("/debug", HTTP_GET, handleDebug);
+  webServer.on("/debug/wifi", HTTP_GET, []() { handleDebugModule(F("WiFi"), "wifi", DEBUG_LOG_WIFI); });
+  webServer.on("/debug/system", HTTP_GET, []() { handleDebugModule(F("System"), "system", DEBUG_LOG_SYSTEM); });
+  webServer.on("/debug/startup", HTTP_GET, []() { handleDebugModule(F("Startup"), "startup", DEBUG_LOG_STARTUP); });
+  webServer.on("/debug/gps", HTTP_GET, handleGpsDebugModule);
+  webServer.on("/debug/imu", HTTP_GET, []() { handleDebugModule(F("Accelerometer / IMU"), "imu", DEBUG_LOG_IMU); });
+  webServer.on("/debug/egt", HTTP_GET, []() { handleDebugModule(F("Temperature / EGT"), "egt", DEBUG_LOG_EGT); });
+  webServer.on("/debug/can", HTTP_GET, []() { handleDebugModule(F("CAN"), "can", DEBUG_LOG_CAN); });
+  webServer.on("/debug/wifi/enable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_WIFI, true, "wifi"); });
+  webServer.on("/debug/wifi/disable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_WIFI, false, "wifi"); });
+  webServer.on("/debug/system/enable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_SYSTEM, true, "system"); });
+  webServer.on("/debug/system/disable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_SYSTEM, false, "system"); });
+  webServer.on("/debug/startup/enable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_STARTUP, true, "startup"); });
+  webServer.on("/debug/startup/disable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_STARTUP, false, "startup"); });
+  webServer.on("/debug/gps/enable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_GPS, true, "gps"); });
+  webServer.on("/debug/gps/disable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_GPS, false, "gps"); });
+  webServer.on("/debug/gps/ublox/enable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_UBLOX, true, "gps"); });
+  webServer.on("/debug/gps/ublox/disable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_UBLOX, false, "gps"); });
+  webServer.on("/debug/imu/enable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_IMU, true, "imu"); });
+  webServer.on("/debug/imu/disable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_IMU, false, "imu"); });
+  webServer.on("/debug/egt/enable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_EGT, true, "egt"); });
+  webServer.on("/debug/egt/disable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_EGT, false, "egt"); });
+  webServer.on("/debug/can/enable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_CAN, true, "can"); });
+  webServer.on("/debug/can/disable", HTTP_POST, []() { handleDebugToggle(DEBUG_LOG_CAN, false, "can"); });
   webServer.on("/debug/stream", HTTP_GET, handleDebugStream);
   webServer.on("/debug/stream/wifi", HTTP_GET, []() { handleModuleDebugStream(F("wifi")); });
   webServer.on("/debug/stream/system", HTTP_GET, []() { handleModuleDebugStream(F("system")); });
+  webServer.on("/debug/stream/startup", HTTP_GET, []() { handleModuleDebugStream(F("startup")); });
   webServer.on("/debug/stream/gps", HTTP_GET, []() { handleModuleDebugStream(F("gps")); });
   webServer.on("/debug/stream/imu", HTTP_GET, []() { handleModuleDebugStream(F("imu")); });
   webServer.on("/debug/stream/egt", HTTP_GET, []() { handleModuleDebugStream(F("egt")); });
@@ -264,10 +414,12 @@ void setupWiFiSettingsWebServer() {
   });
   webServer.begin();
   webServerStarted = true;
-  Serial.println(F("WiFi settings web server started on port 80"));
-  Serial.println(F("WiFi debug stream available at /debug/stream"));
+  printSerialDebugLine(F("WiFi settings web server started on port 80"));
+  appendStartupDebugLogLine(F("WiFi settings web server started on port 80"));
+  printSerialDebugLine(F("WiFi debug stream available at /debug/stream"));
+  appendStartupDebugLogLine(F("WiFi debug stream available at /debug/stream"));
 }
 
-void maintainWiFiSettingsWebServer() {
+void maintainSettingsWebServer() {
   webServer.handleClient();
 }

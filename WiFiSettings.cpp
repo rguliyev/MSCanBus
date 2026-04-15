@@ -4,17 +4,8 @@
 #include <Preferences.h>
 #include <WiFi.h>
 
-#include "WiFiSettingsState.h"
-#include "WiFiSettingsWeb.h"
-
-// ESP32 access point settings
-#define WIFI_CLEAR_STORED_PREFERENCES false
-#define WIFI_DEBUG false
-#define WIFI_HOSTNAME "MSCanBus"
-#define WIFI_DEFAULT_AP_SSID "MSCanBus-Setup"
-#define WIFI_DEFAULT_AP_PASSWORD "mscanbus"
-#define WIFI_AP_CHANNEL 6
-#define WIFI_AP_RESTART_DELAY_MS 1000
+#include "Config.h"
+#include "DebugLog.h"
 
 static Preferences wifiPreferences;
 
@@ -24,6 +15,7 @@ static String pendingApSsid;
 static String pendingApPassword;
 static bool apStarted = false;
 static bool apRestartPending = false;
+static bool collectingStartupMessages = false;
 static uint32_t apRestartAt = 0;
 
 static bool isPrintableAscii(const String &value) {
@@ -39,15 +31,23 @@ static const char *boolText(bool value) {
 }
 
 static void debugApSettings(const char *context, const String &ssid, const String &password) {
-  if (!WIFI_DEBUG) return;
+  String line = F("[WiFi AP DBG] ");
+  line += context;
+  line += F(" ssid=\"");
+  line += ssid;
+  line += F("\" ssidLen=");
+  line += ssid.length();
+  line += F(" passwordLen=");
+  line += password.length();
+  line += F(" validSsid=");
+  line += boolText(isValidAccessPointSsid(ssid));
+  line += F(" validPassword=");
+  line += boolText(isValidAccessPointPassword(password));
 
-  Serial.printf(F("[WiFi AP DBG] %s ssid=\"%s\" ssidLen=%u passwordLen=%u validSsid=%s validPassword=%s\n"),
-                context,
-                ssid.c_str(),
-                (unsigned)ssid.length(),
-                (unsigned)password.length(),
-                boolText(isValidAccessPointSsid(ssid)),
-                boolText(isValidAccessPointPassword(password)));
+  if (WIFI_DEBUG) {
+    printSerialDebugLine(line);
+  }
+  if (collectingStartupMessages) appendStartupDebugLogLine(line);
 }
 
 bool isValidAccessPointSsid(const String &ssid) {
@@ -117,6 +117,8 @@ String accessPointDebugText() {
   text += WiFi.getMode();
   text += F("\nwifi_debug=");
   text += WIFI_DEBUG ? F("true") : F("false");
+  text += F("\nweb_wifi_debug=");
+  text += isDebugLogEnabled(DEBUG_LOG_WIFI) ? F("true") : F("false");
   text += F("\nclear_preferences_flag=");
   text += WIFI_CLEAR_STORED_PREFERENCES ? F("true") : F("false");
   text += F("\npending_restart=");
@@ -135,7 +137,10 @@ String accessPointDebugText() {
 }
 
 static void clearStoredPreferences() {
-  if (WIFI_DEBUG) Serial.println(F("[WiFi AP DBG] clearing Preferences namespace mscanbus"));
+  if (WIFI_DEBUG) {
+    printSerialDebugLine(F("[WiFi AP DBG] clearing Preferences namespace mscanbus"));
+  }
+  if (collectingStartupMessages) appendStartupDebugLogLine(F("[WiFi AP DBG] clearing Preferences namespace mscanbus"));
 
   wifiPreferences.begin("mscanbus", false);
   wifiPreferences.clear();
@@ -157,7 +162,8 @@ static void loadApSettings() {
   debugApSettings("loaded preferences", apSsid, apPassword);
 
   if (!isValidAccessPointSsid(apSsid) || !isValidAccessPointPassword(apPassword)) {
-    Serial.println(F("Saved access point settings are invalid; using defaults"));
+    printSerialDebugLine(F("Saved access point settings are invalid; using defaults"));
+    if (collectingStartupMessages) appendStartupDebugLogLine(F("Saved access point settings are invalid; using defaults"));
     apSsid = WIFI_DEFAULT_AP_SSID;
     apPassword = WIFI_DEFAULT_AP_PASSWORD;
   }
@@ -167,7 +173,7 @@ static bool saveApSettings(const String &ssid, const String &password) {
   debugApSettings("save requested", ssid, password);
 
   if (!isValidAccessPointSsid(ssid) || !isValidAccessPointPassword(password)) {
-    Serial.println(F("Refusing to save invalid access point settings"));
+    printSerialDebugLine(F("Refusing to save invalid access point settings"));
     return false;
   }
 
@@ -178,7 +184,7 @@ static bool saveApSettings(const String &ssid, const String &password) {
 
   apSsid = ssid;
   apPassword = password;
-  if (WIFI_DEBUG) Serial.println(F("[WiFi AP DBG] access point settings saved to Preferences"));
+  if (WIFI_DEBUG) printSerialDebugLine(F("[WiFi AP DBG] access point settings saved to Preferences"));
   return true;
 }
 
@@ -201,15 +207,31 @@ static bool startAccessPoint(const String &ssid, const String &password) {
 
   apStarted = started;
   if (started) {
-    Serial.printf(F("WiFi AP started: %s, IP: %s\n"),
-                  ssid.c_str(), WiFi.softAPIP().toString().c_str());
+    String line = F("WiFi AP started: ");
+    line += ssid;
+    line += F(", IP: ");
+    line += WiFi.softAPIP().toString();
+    printSerialDebugLine(line);
+    if (collectingStartupMessages) {
+      appendStartupDebugLogLine(line);
+    }
     if (WIFI_DEBUG) {
-      Serial.printf(F("[WiFi AP DBG] apPasswordLen=%u channel=%u\n"),
-                    (unsigned)password.length(),
-                    (unsigned)WIFI_AP_CHANNEL);
+      String apDebugLine = F("[WiFi AP DBG] apPasswordLen=");
+      apDebugLine += password.length();
+      apDebugLine += F(" channel=");
+      apDebugLine += WIFI_AP_CHANNEL;
+      printSerialDebugLine(apDebugLine);
+    }
+    if (collectingStartupMessages) {
+      String line = F("[WiFi AP DBG] apPasswordLen=");
+      line += password.length();
+      line += F(" channel=");
+      line += WIFI_AP_CHANNEL;
+      appendStartupDebugLogLine(line);
     }
   } else {
-    Serial.println(F("WiFi AP failed to start"));
+    printSerialDebugLine(F("WiFi AP failed to start"));
+    if (collectingStartupMessages) appendStartupDebugLogLine(F("WiFi AP failed to start"));
   }
 
   return started;
@@ -222,8 +244,10 @@ void requestAccessPointSettings(const String &ssid, const String &password) {
   apRestartAt = millis() + WIFI_AP_RESTART_DELAY_MS;
 
   if (WIFI_DEBUG) {
-    Serial.printf(F("[WiFi AP DBG] AP restart scheduled at %lu; settings will be saved after softAP starts\n"),
-                  (unsigned long)apRestartAt);
+    String line = F("[WiFi AP DBG] AP restart scheduled at ");
+    line += apRestartAt;
+    line += F("; settings will be saved after softAP starts");
+    printSerialDebugLine(line);
   }
 }
 
@@ -240,7 +264,7 @@ static void applyPendingApSettings() {
   if (startAccessPoint(pendingApSsid, pendingApPassword)) {
     saveApSettings(pendingApSsid, pendingApPassword);
   } else {
-    Serial.println(F("Restoring previous access point settings"));
+    printSerialDebugLine(F("Restoring previous access point settings"));
     startAccessPoint(oldSsid, oldPassword);
   }
 
@@ -249,19 +273,19 @@ static void applyPendingApSettings() {
 }
 
 void setupWiFi() {
+  collectingStartupMessages = true;
   if (WIFI_CLEAR_STORED_PREFERENCES) {
-    Serial.println(F("Clearing stored WiFi preferences"));
+    printSerialDebugLine(F("Clearing stored WiFi preferences"));
+    appendStartupDebugLogLine(F("Clearing stored WiFi preferences"));
     clearStoredPreferences();
   }
 
   loadApSettings();
   startAccessPoint(apSsid, apPassword);
-  setupWiFiSettingsWebServer();
+  collectingStartupMessages = false;
 }
 
 void maintainWiFi() {
-  maintainWiFiSettingsWebServer();
-
   if (apRestartPending && (int32_t)(millis() - apRestartAt) >= 0) {
     apRestartPending = false;
     applyPendingApSettings();

@@ -13,6 +13,7 @@ This project leverages the [ESP32](https://www.espressif.com/en/products/socs/es
 * **GPS Integration**: u-blox binary protocol with multi-constellation support (GPS, GLONASS, Galileo, Beidou)
 * **Accelerometer Integration**: 3-axis IMU data with automatic calibration (MPU6050)
 * **EGT Integration**: MAX31855 thermocouple sensor for exhaust gas temperature measurement
+* **WiFi Settings UI**: ESP32 access point with a local web UI for runtime settings and status pages
 * **Real-time Data**: GPS coordinates, UTC time, altitude, course, speed, acceleration, and exhaust gas temperature
 * **JBPerf Compatible**: Uses same block/offset scheme as [JBPerf IO Extender Board](https://jbperf.com/io_extender/index.html)
 * **Race Technology Compatible**: Broadcasts GPS position, speed, and accelerometer data using Race Technology 11-bit CAN message format
@@ -124,7 +125,7 @@ CANL       → CAN Low
 
 ### CAN Bus Configuration
 - **Speed**: 500 kbps (configurable in code)
-- **Define**: Set via `CAN_SPEED` constant in `MSCanBus.ino`
+- **Define**: Set via `CAN_SPEED` constant in `Config.h`
 - **Protocol**: MegaSquirt extended frame format (29-bit identifier)
 - **Target ID**: 0 (MegaSquirt ECU, configurable as `MS_CAN_ID`)
 - **Device ID**: 10 (configurable as `MY_CAN_ID`)
@@ -137,6 +138,13 @@ CANL       → CAN Low
 - **Protocol**: u-blox UBX binary
 - **GNSS Systems**: GPS, SBAS, Galileo, Beidou, IMES, QZSS, GLONASS (bitmask: 77)
 - **Save Config**: Auto-save when needed
+
+### WiFi Configuration
+- **Mode**: ESP32 access point
+- **Default SSID**: `MSCanBus-Setup`
+- **Default Password**: `mscanbus`
+- **Web UI**: Connect to the access point and open the ESP32 access point IP, normally `http://192.168.4.1/`
+- **Runtime Handling**: `setupWiFi()` starts the access point and web server; `maintainWiFi()` must run every loop so web requests are served
 
 ### Supported Data Requests (JBPerf IO Extender Compatible)
 | Offset | Data Type | Description | Response When |
@@ -161,8 +169,8 @@ CANL       → CAN Low
 
 ## Configuration
 
-### Pin Configuration
-Edit these defines in `MSCanBus.ino` to match your wiring:
+### Config.h
+Edit `Config.h` to match your wiring, CAN IDs, broadcast rates, GPS setup, and WiFi access point settings:
 ```cpp
 // Debug Output
 #define DEBUG true    // Enable detailed serial logging
@@ -181,6 +189,18 @@ Edit these defines in `MSCanBus.ino` to match your wiring:
 #define IMU_SDA   26  // ESP32 pin connected to IMU SDA
 #define IMU_SCL   27  // ESP32 pin connected to IMU SCL
 
+// Basic settings
+#define SERIAL_BAUD_RATE 115200
+#define GPS_BAUD_RATE 230400
+#define CAN_SPEED 500
+#define CAN_TIMEOUT 0
+#define I2C_CLOCK_SPEED 400000
+
+// MegaSquirt CAN IDs
+#define MS_CAN_ID 0    // MegaSquirt ECU CAN ID (usually 0)
+#define MY_CAN_ID 10   // This device's CAN ID (must match TunerStudio)
+#define MY_CAN_TBL 7   // This device's table number (must match TunerStudio)
+
 // Race Technology CAN Message IDs
 #define CAN_ID_ACCEL_XYZ     0x300  // Accelerometer XYZ data
 #define CAN_ID_GPS_LLH1      0x302  // GPS Position LLH1 (latitude)
@@ -190,21 +210,46 @@ Edit these defines in `MSCanBus.ino` to match your wiring:
 // Custom CANEGT Protocol Message IDs
 #define CAN_ID_EGT           0x690  // EGT Temperature (1680 decimal)
 
-// MegaSquirt CAN IDs
-#define MS_CAN_ID 0   // MegaSquirt ECU CAN ID (usually 0)
-#define MY_CAN_ID 10  // This device's CAN ID (must match TunerStudio)
-#define MS_CAN_TBL 7  // This device's Table number (must match TunerStudio)
-
 // IMU Configuration
-#define IMU_GEOMETRY 0    //Set IMU geometry (check the reference [picture](https://github.com/LiquidCGS/FastIMU/raw/main/MountIndex.png)).
-MPU6050 IMU;              //Set to a supported by [FastIMU](https://github.com/LiquidCGS/FastIMU) IMU
+#define IMU_ADDRESS 0x68
+#define IMU_GEOMETRY 0
 
 // Race Technology broadcast timing
 #define RT_GPS_POSITION_INTERVAL_MS 200  // 5Hz for GPS position (LLH1/LLH2)
 #define RT_GPS_SPEED_INTERVAL_MS 100     // 10Hz for GPS speed
 #define RT_ACCEL_INTERVAL_MS 40          // 25Hz for accelerometer
 #define RT_EGT_INTERVAL_MS 333           // 3Hz for EGT data
+
+// GPS settings
+#define GPS_RATE_MS 100
+#define GPS_SAVE_CONFIG 2
+#define GPS_GNSS_MODE 77
+#define GPS_NAV_ENGINE 4
+
+// WiFi access point settings
+#define WIFI_CLEAR_STORED_PREFERENCES false
+#define WIFI_DEBUG true
+#define WIFI_HOSTNAME "MSCanBus"
+#define WIFI_DEFAULT_AP_SSID "MSCanBus-Setup"
+#define WIFI_DEFAULT_AP_PASSWORD "mscanbus"
+#define WIFI_AP_CHANNEL 6
+#define WIFI_AP_RESTART_DELAY_MS 1000
 ```
+
+### Source Layout
+The sketch is split by responsibility so `MSCanBus.ino` stays small:
+
+- `MSCanBus.ino`: Arduino `setup()`/`loop()` orchestration only
+- `Config.h`: all user-tunable settings, including pins, serial/CAN rates, MegaSquirt IDs, Race Technology IDs/rates, GPS/IMU settings, and WiFi AP settings
+- `MSCanBus.h`: shared CAN protocol definitions, packed structs, byte packing macros, and shared library includes
+- `CanBus.cpp` / `CanBus.h`: MegaSquirt request parsing, response packing, and CAN transmit helper
+- `RaceTechBroadcast.cpp` / `RaceTechBroadcast.h`: Race Technology 11-bit GPS, accelerometer, and EGT broadcasts
+- `GPSModule.cpp` / `GPSModule.h`: GPS serial transport adapter, UBX driver setup/update, GPS location conversion, and GPS serial print helper
+- `Sensors.cpp` / `Sensors.h`: I2C, IMU calibration/update, EGT setup/update, and sensor print helpers
+- `WiFiSettings.cpp` / `WiFiSettings.h`: access point setup, stored preferences, validation, restart scheduling, and public WiFi settings API
+- `SettingsWebServer.cpp` / `SettingsWebServer.h`: HTTP server lifecycle, web routes, settings pages, and debug/status pages
+- `WebDebug.cpp` / `WebDebug.h`: status text callbacks consumed by the WiFi debug pages
+- `qqqlab_GPS_UBLOX.cpp` / `qqqlab_GPS_UBLOX.h`: bundled UBX GPS driver
 
 ### TunerStudio Setup
 Configure TunerStudio to enable necessary settings:
@@ -334,11 +379,18 @@ Got a CAN Frame for: 10 Got CAN Req
 ## Project Structure
 ```
 MSCanBus/
-├── MSCanBus.ino          # Main Arduino sketch
-├── MSCanBus.h            # MegaSquirt protocol definitions
-├── qqqlab_GPS_UBLOX.h    # GPS driver header
-├── qqqlab_GPS_UBLOX.cpp  # GPS driver implementation
-└── README.md             # This documentation
+├── MSCanBus.ino              # Arduino setup/loop orchestration
+├── Config.h                  # Pin map and runtime constants
+├── MSCanBus.h                # Shared protocol definitions and packing helpers
+├── CanBus.h/.cpp             # MegaSquirt CAN request/response handling
+├── RaceTechBroadcast.h/.cpp  # Race Technology CAN broadcasts
+├── GPSModule.h/.cpp          # GPS transport adapter and setup/update helpers
+├── Sensors.h/.cpp            # IMU and EGT setup/update helpers
+├── WiFiSettings.h/.cpp       # WiFi AP state, persistence, and settings API
+├── SettingsWebServer.h/.cpp  # HTTP routes, settings UI, and status pages
+├── WebDebug.h/.cpp           # Web debug/status text providers
+├── qqqlab_GPS_UBLOX.h/.cpp   # Bundled u-blox GPS driver
+└── README.md                 # This documentation
 ```
 
 ## Troubleshooting

@@ -1,3 +1,6 @@
+#ifndef MSCANBUS_H
+#define MSCANBUS_H
+
 #include <ESP32-TWAI-CAN.hpp>
 #include "qqqlab_GPS_UBLOX.h"
 #include "FastIMU.h"
@@ -11,19 +14,6 @@
 #define MSG_REQ 1    // Request
 #define MSG_RSP 2    // Response
 #define MSG_BCAST 3  // Broadcast
-
-// Race Technology CAN Message IDs
-#define CAN_ID_ACCEL_XYZ 0x300  // Accelerometer XYZ data
-#define CAN_ID_GPS_LLH1 0x302   // GPS Position LLH1 (latitude)
-#define CAN_ID_GPS_LLH2 0x303   // GPS Position LLH2 (longitude/altitude)
-#define CAN_ID_GPS_SPEED 0x310  // GPS Speed 2D/3D
-#define CAN_ID_EGT 0x690        // EGT Temperature (1680 decimal)
-
-// Race Technology broadcast timing
-#define RT_GPS_POSITION_INTERVAL_MS 100  // 10Hz for GPS position (LLH1/LLH2)
-#define RT_GPS_SPEED_INTERVAL_MS 50      // 20Hz for GPS speed
-#define RT_ACCEL_INTERVAL_MS 40          // 25Hz for accelerometer
-#define RT_EGT_INTERVAL_MS 333           // 3Hz for EGT data (change to your sensor response time)
 
 // pack/unpack the Megasquirt extended message format header
 
@@ -91,3 +81,5 @@ typedef struct {
 // Big endian byte packing
 #define BE16_BYTE0(val) ((uint8_t)((val >> 8) & 0xFF))  // MSB
 #define BE16_BYTE1(val) ((uint8_t)(val & 0xFF))         // LSB
+
+#endif
